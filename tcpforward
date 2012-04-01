@@ -18,6 +18,11 @@ my $bufsize = 1024;
 my @lsocks;
 my @addr;
 
+use Crypt::RC4;
+
+my $rc4 = 0;   # no encryption by default
+my $rc4pass = "changeme";
+
 while (@ARGV) {
   my $flag = shift;
 
@@ -45,6 +50,12 @@ while (@ARGV) {
   elsif ($flag eq '-v') {
     $verbose++;
   }
+  elsif ($flag eq '-rc4') {
+    $rc4 = 1;
+  }
+  elsif ($flag eq '-encpass' && @ARGV) {
+    $rc4pass = shift or die $usage;
+  }
   elsif ($flag eq '-h') {
     pod2usage();
   }
@@ -52,6 +63,9 @@ while (@ARGV) {
     die $usage;
   }
 }
+
+my $rc4e = Crypt::RC4->new( $rc4pass ) if $rc4; 
+my $rc4d = Crypt::RC4->new( $rc4pass ) if $rc4;
 
 die $usage unless @addr == 2;
 
@@ -96,24 +110,31 @@ sub forward {
       die "select error: $!";
 
     if (vec($rout, fileno $socks[0], 1)) {
-      $eof[0] = !transfer($socks[0], $socks[1]);
+      $eof[0] = !transfer($socks[0], $socks[1], $rc4*1);
       $socks[1]->shutdown(1) if $eof[0];
     }
 
     if (vec($rout, fileno $socks[1], 1)) {
-      $eof[1] = !transfer($socks[1], $socks[0]);
+      $eof[1] = !transfer($socks[1], $socks[0], $rc4*2);
       $socks[0]->shutdown(1) if $eof[1];
     }
   }
 }
 
 sub transfer {
-  my ($rfh, $wfh) = @_;
+  my ($rfh, $wfh, $enc) = @_;
   my $total = 0;
   my $bytes;
 
   while ($bytes = sysread $rfh, my $data, $bufsize) {
     $total += $bytes;
+
+    if ($enc == 1) {
+        $data = $rc4d->RC4($data); 
+    } 
+    elsif ($enc == 2) {
+        $data = $rc4e->RC4($data); 
+    }
 
     while ($bytes > 0) {
       my $written = syswrite $wfh, $data, $bytes, length($data) - $bytes;
@@ -196,6 +217,8 @@ tcpforward [OPTIONS] -l|-c host1:port1 -l|-c host2:port2
   -N count       exit after forwarding count connections
   -k             fork before forwarding (default: no)
   -s size        chunk size for non-blocking reads (default: 1024)
+  -rc4           enable RC4 encryption
+  -encpass       set RC4 passphrase
   -V             print version and exit
   -v             turn on parseable logging
   -h             display usage information
@@ -255,9 +278,10 @@ Monitoring a service's network usage
 
 =head1 SECURITY
 
-tcpforward does B<not> provide encryption of any sort. Forward
-only encrypted connections if security is an issue. Consider SSH tunneling
-or stunnel if you need an encrypted tunnel.
+Added RC4 encryption mostly to avoid firewall filtering, not as bad as xor.
+Crypt::RC4 is slow and file transfers are 2-8 times slower for me with it. 
+Forward only encrypted connections if security is an issue. Consider SSH 
+tunneling or stunnel if you need an encrypted tunnel.
 
 That said, part of the original motivation for tcpforward was reverse
 tunneling of the SSH service itself back through a NAT'ed gateway.
@@ -290,6 +314,16 @@ simultaneous forwarded connections. The default is non-forking.
 When forwarding, attempt non-blocking reads of size bytes at a time. Setting
 this to the median packet size for a given protocol may result in some small
 performance gain.
+
+=item -rc4
+
+Enable RC4 encryption mostly to avoid firewall filtering. 
+RC4 is slow and file transfers are 2-8 times slower for me with it.
+Set passphrase with -encpass passphrase or default one will be used. 
+
+=item -encpass passphrase
+
+Set passphrase for RC4 encryption.
 
 =item -V
 
